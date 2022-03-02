@@ -3,6 +3,7 @@ package shp
 import (
 	"encoding/binary"
 	"io"
+	"math"
 	"strings"
 )
 
@@ -33,6 +34,12 @@ const (
 // is used to represent bounding boxes
 type Box struct {
 	MinX, MinY, MaxX, MaxY float64
+}
+
+// PointInBox will check if point is in bounding box
+func (b *Box) PointInBox(pt Point) bool {
+	return pt.X < b.MaxX && pt.X > b.MinX &&
+		pt.Y < b.MaxY && pt.Y > b.MinY
 }
 
 // Extend extends the box with coordinates from the provided
@@ -115,6 +122,32 @@ func (p *Point) read(file io.Reader) {
 
 func (p *Point) write(file io.Writer) {
 	binary.Write(file, binary.LittleEndian, p)
+}
+
+// PointOnCircle will return the point on the edge of a circle with a
+// certain radius and bearing/degrees.
+func (p *Point) PointOnCircle(radius, degrees float64) Point {
+	radian := degrees * (math.Pi / 180)
+	return Point{X: p.X + radius*math.Cos(radian), Y: p.Y + radius*math.Sin(radian)}
+}
+
+// Given distance in meters and bearing in degrees, calculate
+// latitude and longitude from a starting point.  This is good for shorter
+// distances only as errors build up in that Earth is not a perfect sphere.
+func (p *Point) PointOnEarth(distance, bearing float64) Point {
+	const R = 6378137
+	var lat, lon, latDest, lonDest float64
+
+	// convert to radians
+	bearing = bearing * (math.Pi / 180)
+
+	lat = p.Y * (math.Pi / 180)
+	lon = p.X * (math.Pi / 180)
+	latDest = math.Asin(math.Sin(lat)*math.Cos(distance/R) +
+		math.Cos(lat)*math.Sin(distance/R)*math.Cos(bearing))
+	lonDest = lon + math.Atan2(math.Sin(bearing)*math.Sin(distance/R)*math.Cos(lat),
+		math.Cos(distance/R)-math.Sin(lat)*math.Sin(latDest))
+	return Point{Y: latDest * (180 / math.Pi), X: lonDest * (180 / math.Pi)}
 }
 
 func flatten(points [][]Point) []Point {
@@ -213,6 +246,30 @@ func (p *Polygon) write(file io.Writer) {
 	binary.Write(file, binary.LittleEndian, p.NumPoints)
 	binary.Write(file, binary.LittleEndian, p.Parts)
 	binary.Write(file, binary.LittleEndian, p.Points)
+}
+
+// PointInPolygon checks to see if a point pt is inside the polygon
+func (p *Polygon) PointInPolygon(pt Point) bool {
+	bb := p.BBox() // Get the bounding box of the polygon in question
+
+	// If point not in bounding box return false immediately
+	if !bb.PointInBox(pt) {
+		return false
+	}
+
+	// If the point is in the bounding box then we need to check the polygon
+	nverts := len(p.Points)
+	intersect := false
+	verts := p.Points
+	j := 0
+	for i := 1; i < nverts; i++ {
+		if ((verts[i].Y > pt.Y) != (verts[j].Y > pt.Y)) &&
+			(pt.X < (verts[j].X-verts[i].X)*(pt.Y-verts[i].Y)/(verts[j].Y-verts[i].Y)+verts[i].X) {
+			intersect = !intersect
+		}
+		j = i
+	}
+	return intersect
 }
 
 // MultiPoint is the shape that consists of multiple points.
